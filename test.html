@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Live Wikipedia Updates</title>
+
+	<link rel="stylesheet" href="https://unpkg.com/leaflet@1.3.1/dist/leaflet.css"/>
+	<script src="https://unpkg.com/leaflet@1.3.1/dist/leaflet.js"></script>
+
+	<script type="text/javascript">
+		var wiki_worker;
+		var events = [];
+		var map;
+		var statsLayer;
+		var tile_lookup = {};
+		var markers = {};
+		var play_pause_button_container;
+
+		var playing = true;
+		var max_aggregate_zoom = 15
+		var markers_before_aggregation = 5;
+
+		//entry, ran on body load.
+		function ready() {
+			readyMap();
+
+			if (window.Worker) {
+				wiki_worker = new Worker("wiki_worker.js");
+				wiki_worker.onmessage = processEdit;
+				start();
+			} else {
+				alert('Worker not supported');
+			}
+		}
+
+
+		/***
+			handler for wiki worker message event.
+			Updates stats for aggregates layer.
+
+		*/
+		function processEdit(e) {
+			var change = e.data;
+			events.push(change)
+
+			//work through all zoom levels updating stats
+		  	for (var z = 0; z <= 17; z++) {
+	  			var latAtZoom = lat2tile(change.lat, z); //lat is y
+	  			var lngAtZoom = long2tile(change.lon, z); //lon is x
+	  			var key = getMarkersKey({z: z, x: lngAtZoom, y: latAtZoom});
+	  			var event_index = events.length - 1
+	  			if (key in tile_lookup) {
+	  				tile_lookup[key].push(event_index);
+	  			} else {
+	  				tile_lookup[key] = [event_index];
+	  			}
+		  	}
+			
+  			statsLayer.redraw();
+		}
+
+		//setup leafletjs map with google maps and aggregate stats layers.
+		function readyMap() {
+			map = L.map('map').setView([0, 0], 2);
+
+			googleStreets = L.tileLayer('https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',{
+			    maxZoom: 17,
+			    subdomains:['mt0','mt1','mt2','mt3']
+			});
+			googleStreets.addTo(map);
+
+			map.on('zoomstart', clearAllMarkers);
+
+			play_pause_button_container = document.createElement('div');
+			play_pause_button_container.classList.add('leaflet-bar');
+			play_pause_button_container.classList.add('leaflet-touch');
+			play_pause_button_container.classList.add('leaflet-control');
+			play_pause_button_container.classList.add('play_pause_button');
+		    play_pause_button_container.onclick = play_pause_click;
+			var play_pause_button = L.Control.extend({
+				options: { position: 'topleft'},
+				onAdd: function (map) {
+				    return play_pause_button_container;
+				},
+			});
+			map.addControl(new play_pause_button());
+
+			//custom layer for deciding when to show markers or draw aggregate stats
+    		L.GridLayer.AggregateStats = L.GridLayer.extend({
+			    createTile: function (coords) {
+			    	var markersKey = getMarkersKey(coords);
+			    	var points = tile_lookup[markersKey]
+			    	var tile = document.createElement('div');
+			    	tile.classList.add('statsTile');
+			    	if(points) {
+			    		// decide if should show markers or aggregate stats
+			        	if (points.length < markers_before_aggregation || coords.z > max_aggregate_zoom) {
+			        		var canSkip = false;
+
+			        		// check if markers in tile have been updated. If not, can skip.
+			        		if(markersKey in markers && markers[markersKey].length == points.length) {
+			        			canSkip = true;
+			        		}
+
+			        		if(!canSkip) {
+			        			clearMarkers(markersKey);
+
+				        		var newMarkers = []
+				        		for (var p = 0; p < points.length; p++) {
+				        			var event_index = points[p];
+				        			var change = events[event_index]
+				        			var marker = L.marker([change.lat, change.lon]).addTo(map);
+				        			marker.bindPopup(generateMarkerPopup(change))
+				        			newMarkers.push(marker);
+				        		}
+
+				        		markers[markersKey] = newMarkers;
+				        	}
+			        	} else {
+			        		//to many marker in this tile, so generate aggregate stats
+			        		clearMarkers(markersKey);
+			        		var span = document.createElement('span')
+				        	span.innerHTML = points.length + '';
+				        	tile.appendChild(span);
+			        	}
+			    	}
+
+			        return tile;
+			    }
+			});
+
+			L.gridLayer.aggregateStats = function(opts) {
+			    return new L.GridLayer.AggregateStats(opts);
+			};
+
+			statsLayer = L.gridLayer.aggregateStats()
+			map.addLayer(statsLayer);
+		}
+
+		function start() {
+			wiki_worker.postMessage('start')
+    		play_pause_button_container.innerHTML = 'Stop';
+		}
+
+		function stop() {
+			wiki_worker.postMessage('stop')
+    		play_pause_button_container.innerHTML = 'Start'
+		}
+
+		function play_pause_click() {
+			if(playing) {
+				stop();
+			} else {
+				start();
+			}
+
+			playing = !playing
+		}
+
+		function getMarkersKey(coords) {
+			return [coords.z, coords.y, coords.x].join('_');
+		}
+
+		function clearMarkers(key) {
+			var markersList = markers[key];
+			if (markersList) {
+				for(var i = 0; i < markersList.length; i++) {
+					map.removeLayer(markersList[i])
+				}
+			}
+		}
+
+		function clearAllMarkers() {
+			var keys = Object.keys(markers);
+			for (var i = 0; i < keys.length; i++) {
+				clearMarkers(keys[i]);
+			}
+
+			markers = {};
+		}
+
+		//generate the popup html for a single marker
+		function generateMarkerPopup(marker) {
+			return '<b>' + marker.title + '</b><br>'
+			+ '<b>Bot:</b> ' + marker.is_bot + '<br>'
+			+ '<b>Comment:</b> ' + marker.comment + '<br>'
+			+ '<a target="_blank" href="'+ marker.link +'">View Page</a><br>'
+			+ '<a target="_blank" href="'+ 'https://en.wikipedia.org/w/index.php?title=' + marker.title + '&action=history' +'">View History</a><br>';
+		}
+
+		//lat/long to tile
+		//taken from https://wiki.openstreetmap.org/wiki/Slippy_map_tilenames#ECMAScript_.28JavaScript.2FActionScript.2C_etc..29
+		function long2tile(lon,zoom) { return (Math.floor((lon+180)/360*Math.pow(2,zoom))); }
+		function lat2tile(lat,zoom)  { return (Math.floor((1-Math.log(Math.tan(lat*Math.PI/180) + 1/Math.cos(lat*Math.PI/180))/Math.PI)/2 *Math.pow(2,zoom))); }
+	</script>
+
+	<style type="text/css">
+		html, body {
+   			height: 100%;
+   			margin: 0;
+		}
+
+		#map {
+		    height: 100%;
+		    width: 100%;
+		}
+
+		.statsTile {
+			color: black;
+			font-size: 50px;
+			text-align: center;
+			padding-top: 110px;
+		}
+
+		.play_pause_button {
+			text-align: center;
+			line-height: 30px;
+			background: white;
+			height: 30px;
+			width: 30px;
+		}
+	</style>
+</head>
+<body onload="ready()">
+	<div id="map">
+		
+	</div>
+</body>
+</html>
