@@ -36,7 +36,6 @@
 		/***
 			handler for wiki worker message event.
 			Updates stats for aggregates layer.
-
 		*/
 		function processEdit(e) {
 			var change = e.data;
@@ -75,7 +74,7 @@
 			play_pause_button_container.classList.add('leaflet-touch');
 			play_pause_button_container.classList.add('leaflet-control');
 			play_pause_button_container.classList.add('play_pause_button');
-		    play_pause_button_container.onclick = play_pause_click;
+			play_pause_button_container.onclick = play_pause_click;
 			var play_pause_button = L.Control.extend({
 				options: { position: 'topleft'},
 				onAdd: function (map) {
@@ -200,8 +199,8 @@
 		}
 
 		#map {
-		    height: 100%;
-		    width: 100%;
+			height: 100%;
+			width: 100%;
 		}
 
 		.statsTile {
@@ -222,7 +221,6 @@
 </head>
 <body onload="ready()">
 	<div id="map">
-		
 	</div>
 </body>
 </html>
